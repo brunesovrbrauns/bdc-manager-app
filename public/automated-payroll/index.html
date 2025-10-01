@@ -5,27 +5,164 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Automated Payroll (Staging)</title>
     <style>
-      body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; margin: 2rem; line-height: 1.5; }
-      .card { max-width: 760px; border: 1px solid #e5e7eb; border-radius: 12px; padding: 24px; box-shadow: 0 1px 2px rgba(0,0,0,0.04); }
-      h1 { margin: 0 0 0.25rem; font-size: 1.75rem; }
+      :root { --border:#e5e7eb; --muted:#6b7280; --blue:#2563eb; }
+      body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; margin: 24px; line-height: 1.5; }
+      .card { max-width: 1000px; border:1px solid var(--border); border-radius:12px; padding:24px; box-shadow:0 1px 2px rgba(0,0,0,.04); }
+      h1 { margin:0 0 8px; font-size:1.75rem; }
       .tag { display:inline-block; background:#eef2ff; color:#3730a3; padding:2px 8px; border-radius:999px; font-size:12px; margin-left:8px; }
-      a { color:#2563eb; text-decoration:none; }
-      a:hover { text-decoration:underline; }
-      .muted { color:#6b7280; font-size:14px; }
-      ul { margin: 0.75rem 0 0 1.25rem; }
+      .muted { color:var(--muted); font-size:14px; margin:0 0 16px; }
+      .actions { display:flex; gap:8px; margin: 12px 0 16px; flex-wrap:wrap; }
+      input, button, select { font: inherit; padding:8px 10px; border:1px solid var(--border); border-radius:8px; }
+      button { background:white; cursor:pointer; }
+      button.primary { background: var(--blue); color:white; border-color: var(--blue); }
+      table { width:100%; border-collapse: collapse; margin-top: 8px; }
+      th, td { border-bottom:1px solid var(--border); padding:8px; text-align:left; font-size:14px; }
+      th { background:#fafafa; position: sticky; top: 0; }
+      .right { text-align:right; }
+      .small { font-size:12px; color:var(--muted); }
+      .error { color:#b91c1c; }
+      .spinner { display:inline-block; width:14px; height:14px; border:2px solid #cbd5e1; border-top-color:#334155; border-radius:50%; animation:spin .8s linear infinite; vertical-align:-2px; }
+      @keyframes spin { to { transform: rotate(360deg); } }
     </style>
   </head>
   <body>
     <div class="card">
       <h1>Automated Payroll <span class="tag">staging</span></h1>
-      <p class="muted">This is a placeholder page living in <code>/public/automated-payroll/index.html</code>. It proves our sandbox deploy path works.</p>
-      <p>Next steps (what Codex will build):</p>
-      <ul>
-        <li>Fetch data from <code>storewide_nightly_numbers</code> (staging DB)</li>
-        <li>Apply dealership comp rules (config-driven)</li>
-        <li>Show line-by-line payroll calc, with manager approvals & export</li>
-      </ul>
-      <p><a href="/">← Back to app</a></p>
+      <p class="muted">
+        This page is a <strong>static prototype</strong> that reads from your <code>storewide_nightly_numbers</code> table on the <em>staging</em> DB.
+        When we’re happy, we can promote it to a full React route.
+      </p>
+
+      <div class="actions">
+        <label>From&nbsp;<input type="date" id="fromDate"></label>
+        <label>To&nbsp;<input type="date" id="toDate"></label>
+        <button id="loadBtn" class="primary">Load</button>
+        <button id="resetBtn">Today</button>
+        <span id="status" class="small"></span>
+      </div>
+
+      <div id="results"></div>
+
+      <p class="small">
+        Tip: this is using the public <code>anon</code> key (safe for client use). Staging keys only affect staging.
+        <br><a href="/">← Back to app</a>
+      </p>
     </div>
+
+    <!-- Minimal client read using Supabase JS (CDN) -->
+    <script type="module">
+      import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm";
+
+      // TODO: paste your staging values (they're public client keys)
+      // Find them in Vercel → Project → Settings → Environment Variables (Preview ▸ develop)
+      const SUPABASE_URL = "https://jucquhkboyulbflpttdl.supabase.co";
+      const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imp1Y3F1aGtib3l1bGJmbHB0dGRsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTkyNjI3OTYsImV4cCI6MjA3NDgzODc5Nn0.-0gzQ_wMhueDOyGj65UdIcMnWA8aMBh5EhibUf6DZ3s
+";
+
+      const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+      const $ = (sel) => document.querySelector(sel);
+      const fmtNum = (n) => (n ?? 0).toLocaleString();
+      const fmtDate = (d) => new Date(d).toLocaleDateString();
+
+      const state = {
+        from: null,
+        to: null,
+      };
+
+      function setToday() {
+        const today = new Date();
+        const yyyy = today.getFullYear();
+        const mm = String(today.getMonth() + 1).padStart(2, "0");
+        const dd = String(today.getDate()).padStart(2, "0");
+        $("#fromDate").value = `${yyyy}-${mm}-${dd}`;
+        $("#toDate").value = `${yyyy}-${mm}-${dd}`;
+      }
+
+      async function load() {
+        const from = $("#fromDate").value || null;
+        const to = $("#toDate").value || null;
+        $("#status").innerHTML = `<span class="spinner"></span> Loading…`;
+        $("#results").innerHTML = "";
+
+        let q = supabase.from("storewide_nightly_numbers").select("*").order("report_date", { ascending: false });
+
+        if (from) q = q.gte("report_date", from);
+        if (to)   q = q.lte("report_date", to);
+
+        const { data, error } = await q.limit(100);
+
+        if (error) {
+          $("#status").innerHTML = `<span class="error">Error: ${error.message}</span>`;
+          return;
+        }
+
+        $("#status").textContent = `Loaded ${data.length} rows`;
+
+        // Very simple “calc”: show columns + quick totals
+        const totals = {
+          leads_received: 0, phone_ups: 0, appointments_meant: 0, appointments_shown: 0,
+          appointments_tomorrow: 0, visits_logged: 0, cars_sold: 0
+        };
+        for (const r of data) {
+          totals.leads_received += r.leads_received ?? 0;
+          totals.phone_ups += r.phone_ups ?? 0;
+          totals.appointments_meant += r.appointments_meant ?? 0;
+          totals.appointments_shown += r.appointments_shown ?? 0;
+          totals.appointments_tomorrow += r.appointments_tomorrow ?? 0;
+          totals.visits_logged += r.visits_logged ?? 0;
+          totals.cars_sold += r.cars_sold ?? 0;
+        }
+
+        const rows = data.map(r => `
+          <tr>
+            <td>${fmtDate(r.report_date)}</td>
+            <td>${r.closer_name || "Unknown"}</td>
+            <td class="right">${fmtNum(r.leads_received)}</td>
+            <td class="right">${fmtNum(r.phone_ups)}</td>
+            <td class="right">${fmtNum(r.appointments_meant)}</td>
+            <td class="right">${fmtNum(r.appointments_shown)}</td>
+            <td class="right">${fmtNum(r.visits_logged)}</td>
+            <td class="right">${fmtNum(r.cars_sold)}</td>
+          </tr>
+        `).join("");
+
+        $("#results").innerHTML = `
+          <table>
+            <thead>
+              <tr>
+                <th>Date</th>
+                <th>Closer</th>
+                <th class="right">Leads</th>
+                <th class="right">Phone Ups</th>
+                <th class="right">Appts Meant</th>
+                <th class="right">Appts Shown</th>
+                <th class="right">Visits</th>
+                <th class="right">Cars Sold</th>
+              </tr>
+            </thead>
+            <tbody>${rows}</tbody>
+            <tfoot>
+              <tr>
+                <th colspan="2" class="right">Totals:</th>
+                <th class="right">${fmtNum(totals.leads_received)}</th>
+                <th class="right">${fmtNum(totals.phone_ups)}</th>
+                <th class="right">${fmtNum(totals.appointments_meant)}</th>
+                <th class="right">${fmtNum(totals.appointments_shown)}</th>
+                <th class="right">${fmtNum(totals.visits_logged)}</th>
+                <th class="right">${fmtNum(totals.cars_sold)}</th>
+              </tr>
+            </tfoot>
+          </table>
+        `;
+      }
+
+      $("#loadBtn").addEventListener("click", load);
+      $("#resetBtn").addEventListener("click", () => { setToday(); load(); });
+
+      // Initialize
+      setToday();
+      load();
+    </script>
   </body>
 </html>
